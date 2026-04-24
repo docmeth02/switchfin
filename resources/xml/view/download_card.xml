@@ -6,15 +6,34 @@
     paddingBottom="5"
     alignItems="center">
 
-    <brls:Image
-        id="download/thumb"
+    <brls:Box
         width="80"
         height="120"
-        marginRight="15"
-        scalingType="fill"
-        cornerRadius="4"
-        backgroundColor="@theme/color/grey_1"
-        image="@res/img/video-card-bg.png" />
+        marginRight="15">
+        <brls:Image
+            id="download/thumb"
+            width="80"
+            height="120"
+            scalingType="fill"
+            cornerRadius="4"
+            backgroundColor="@theme/color/grey_1"
+            image="@res/img/video-card-bg.png" />
+        <brls:Box
+            wireframe="false"
+            positionType="absolute"
+            positionBottom="0"
+            positionLeft="0"
+            visibility="gone"
+            width="80"
+            height="3"
+            backgroundColor="#353535">
+            <brls:Rectangle
+                id="download/progress"
+                height="3"
+                width="50%"
+                color="@theme/color/app" />
+        </brls:Box>
+    </brls:Box>
 
     <brls:Box
         axis="column"

@@ -128,6 +128,23 @@ void DownloadManager::resumeQueue() {
     this->processQueue();
 }
 
+void DownloadManager::updatePlaybackState(const std::string& itemId, int64_t positionTicks, bool markPlayed) {
+    {
+        std::lock_guard<std::mutex> lock(this->mutex);
+        for (auto& item : this->items) {
+            if (item.itemId == itemId) {
+                item.playbackPositionTicks = positionTicks;
+                item.playedPercentage = item.runTimeTicks > 0
+                    ? std::min(100.0f, static_cast<float>(positionTicks * 100.0 / item.runTimeTicks)) : 0;
+                if (markPlayed || item.playedPercentage >= 90.0f) item.played = true;
+                item.needsSync = true;
+                this->saveIndex();
+                break;
+            }
+        }
+    }
+}
+
 void DownloadManager::cancelDownload(const std::string& itemId) {
     bool erased = false;
     {

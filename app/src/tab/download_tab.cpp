@@ -8,6 +8,7 @@
 #include "utils/dialog.hpp"
 #include "utils/misc.hpp"
 #include "api/jellyfin/media.hpp"
+#include <chrono>
 #include <map>
 
 #ifdef USE_BOOST_FILESYSTEM
@@ -25,6 +26,7 @@ public:
     DownloadCard() { this->inflateFromXMLRes("xml/view/download_card.xml"); }
 
     void setItem(const DownloadItem& item, const std::string& downloadDir) {
+        this->rectProgress->getParent()->setVisibility(brls::Visibility::GONE);
         this->thumb->setImageFromRes("img/video-card-bg.png");
         std::string thumbPath = downloadDir + "/" + item.itemId + "/thumb.png";
         if (fs::exists(thumbPath)) {
@@ -70,7 +72,17 @@ public:
             }
             break;
         case DownloadStatus::Completed:
-            this->status->setText("main/download/completed"_i18n);
+            if (item.played) {
+                this->status->setText("main/download/watched"_i18n);
+            } else if (item.playbackPositionTicks > 0 && item.runTimeTicks > 0) {
+                this->rectProgress->setWidthPercentage(item.playedPercentage);
+                this->rectProgress->getParent()->setVisibility(brls::Visibility::VISIBLE);
+                this->status->setText(fmt::format("{}/{}",
+                    misc::sec2Time(item.playbackPositionTicks / jellyfin::PLAYTICKS),
+                    misc::sec2Time(item.runTimeTicks / jellyfin::PLAYTICKS)));
+            } else {
+                this->status->setText("main/download/completed"_i18n);
+            }
             break;
         case DownloadStatus::Failed:
             this->status->setText("main/download/failed"_i18n);
@@ -82,6 +94,7 @@ public:
     BRLS_BIND(brls::Label, name, "download/name");
     BRLS_BIND(brls::Label, detail, "download/detail");
     BRLS_BIND(brls::Label, status, "download/status");
+    BRLS_BIND(brls::Rectangle, rectProgress, "download/progress");
 };
 
 struct DownloadGroup {
@@ -133,6 +146,18 @@ public:
         if (item.status == DownloadStatus::Completed) {
             std::string path = dm.getLocalPath(item.itemId);
             if (!path.empty()) {
+                std::string playItemId = item.itemId;
+                uint64_t playRunTimeTicks = item.runTimeTicks;
+                bool wasPlayed = false;
+                int64_t resumeTicks = 0;
+                for (auto& fresh : dm.getItems()) {
+                    if (fresh.itemId == item.itemId) {
+                        resumeTicks = fresh.playbackPositionTicks;
+                        wasPlayed = fresh.played;
+                        break;
+                    }
+                }
+
                 VideoView* view = new VideoView();
                 float width = brls::Application::contentWidth;
                 float height = brls::Application::contentHeight;
@@ -146,12 +171,34 @@ public:
                 auto& mpv = MPVCore::instance();
                 auto subId = std::make_shared<MPVEvent::Subscription>();
                 auto unsub = std::make_shared<std::atomic_bool>(false);
-                *subId = mpv.getEvent()->subscribe([profile, subId, unsub](MpvEventEnum event) {
+                auto lastSave = std::make_shared<std::chrono::steady_clock::time_point>();
+                *subId = mpv.getEvent()->subscribe(
+                    [profile, subId, unsub, lastSave, playItemId, playRunTimeTicks](MpvEventEnum event) {
                     if (unsub->load()) return;
                     if (event == MpvEventEnum::MPV_RESUME) {
                         profile->init("Local");
-                    } else if (event == MpvEventEnum::MPV_STOP || event == MpvEventEnum::END_OF_FILE ||
-                               event == MpvEventEnum::MPV_FILE_ERROR) {
+                    } else if (event == MpvEventEnum::UPDATE_PROGRESS) {
+                        auto now = std::chrono::steady_clock::now();
+                        if (now - *lastSave < std::chrono::seconds(10)) return;
+                        *lastSave = now;
+                        int64_t ticks = static_cast<int64_t>(MPVCore::instance().playback_time * jellyfin::PLAYTICKS);
+                        brls::sync([playItemId, ticks]() {
+                            DownloadManager::instance().updatePlaybackState(playItemId, ticks);
+                        });
+                    } else if (event == MpvEventEnum::END_OF_FILE) {
+                        brls::sync([playItemId, playRunTimeTicks]() {
+                            DownloadManager::instance().updatePlaybackState(playItemId, playRunTimeTicks, true);
+                        });
+                        unsub->store(true);
+                        auto id = *subId;
+                        brls::sync([id]() {
+                            MPVCore::instance().getEvent()->unsubscribe(id);
+                        });
+                    } else if (event == MpvEventEnum::MPV_STOP || event == MpvEventEnum::MPV_FILE_ERROR) {
+                        int64_t ticks = static_cast<int64_t>(MPVCore::instance().playback_time * jellyfin::PLAYTICKS);
+                        brls::sync([playItemId, ticks]() {
+                            DownloadManager::instance().updatePlaybackState(playItemId, ticks);
+                        });
                         unsub->store(true);
                         auto id = *subId;
                         brls::sync([id]() {
@@ -170,7 +217,11 @@ public:
                 container->addView(view);
                 brls::Application::pushActivity(new brls::Activity(container), brls::TransitionAnimation::NONE);
 
-                MPVCore::instance().setUrl(path);
+                if (resumeTicks > 0 && !wasPlayed) {
+                    mpv.setUrl(path, "start=" + misc::sec2Time(resumeTicks / jellyfin::PLAYTICKS));
+                } else {
+                    mpv.setUrl(path);
+                }
             }
         } else if (item.status == DownloadStatus::Downloading) {
             std::string id = item.itemId;
@@ -208,6 +259,7 @@ public:
         DownloadCard* cell = dynamic_cast<DownloadCard*>(recycler->dequeueReusableCell("Cell"));
         auto& group = this->groups.at(index);
 
+        cell->rectProgress->getParent()->setVisibility(brls::Visibility::GONE);
         cell->thumb->setImageFromRes("img/video-card-bg.png");
         std::string thumb = group.thumbPath(this->dlDir);
         if (!thumb.empty()) cell->thumb->setImageFromFile(thumb);
@@ -242,6 +294,7 @@ public:
         DownloadCard* cell = dynamic_cast<DownloadCard*>(recycler->dequeueReusableCell("Cell"));
         auto& group = this->groups.at(index);
 
+        cell->rectProgress->getParent()->setVisibility(brls::Visibility::GONE);
         cell->thumb->setImageFromRes("img/video-card-bg.png");
         std::string thumb = group.thumbPath(this->dlDir);
         if (!thumb.empty()) cell->thumb->setImageFromFile(thumb);
