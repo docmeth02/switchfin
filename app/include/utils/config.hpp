@@ -176,6 +176,7 @@ public:
     const std::string& getUserId() const { return this->user_id; }
     const std::string& getUserName() const { return this->user->name; }
     const std::string& getToken() const { return this->user->access_token; }
+    const std::string& getServerId() const { return this->user->server_id; }
     const std::string& getUrl() const { return this->server_url; }
     bool isAdmin() const { return this->user->is_admin; }
     const jellyfin::UserConfig& userConfig() const { return this->user->config; }

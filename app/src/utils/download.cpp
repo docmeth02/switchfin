@@ -78,6 +78,8 @@ void DownloadManager::addDownload(const jellyfin::Item& item, DownloadQuality qu
     dl.runTimeTicks = item.RunTimeTicks;
     dl.quality = quality;
     dl.status = DownloadStatus::Queued;
+    dl.serverId = AppConfig::instance().getServerId();
+    dl.userId = AppConfig::instance().getUserId();
 
     auto primaryTag = item.ImageTags.find(jellyfin::imageTypePrimary);
     if (primaryTag != item.ImageTags.end()) {
@@ -108,6 +110,8 @@ void DownloadManager::addDownload(const jellyfin::Episode& item, DownloadQuality
     dl.runTimeTicks = item.RunTimeTicks;
     dl.quality = quality;
     dl.status = DownloadStatus::Queued;
+    dl.serverId = AppConfig::instance().getServerId();
+    dl.userId = AppConfig::instance().getUserId();
     dl.seriesName = item.SeriesName;
     dl.seasonIndex = item.ParentIndexNumber;
     dl.episodeIndex = item.IndexNumber;
@@ -142,6 +146,80 @@ void DownloadManager::updatePlaybackState(const std::string& itemId, int64_t pos
                 break;
             }
         }
+    }
+}
+
+void DownloadManager::syncPlaybackStates() {
+    std::vector<DownloadItem> pending;
+    {
+        std::lock_guard<std::mutex> lock(this->mutex);
+        for (auto& item : this->items) {
+            if (item.needsSync && !item.serverId.empty() && !item.userId.empty()) {
+                pending.push_back(item);
+            }
+        }
+    }
+    if (pending.empty()) return;
+
+    auto& conf = AppConfig::instance();
+    std::vector<DownloadItem> synced;
+
+    for (auto& item : pending) {
+        std::string serverUrl;
+        std::string token;
+
+        for (auto& s : conf.getServers()) {
+            if (s.id == item.serverId && !s.urls.empty()) {
+                serverUrl = s.urls.front();
+                break;
+            }
+        }
+        if (serverUrl.empty()) continue;
+
+        for (auto& u : conf.getUsers(item.serverId)) {
+            if (u.id == item.userId) {
+                token = u.access_token;
+                break;
+            }
+        }
+        if (token.empty()) continue;
+
+        HTTP::Header header = {"Content-Type: application/json", conf.getAuth(token)};
+
+        try {
+            if (item.played) {
+                std::string url = serverUrl +
+                    fmt::format(fmt::runtime(jellyfin::apiPlayedItems), item.userId, item.itemId);
+                HTTP::post(url, "{}", header, HTTP::Timeout{});
+            }
+            if (item.playbackPositionTicks > 0) {
+                nlohmann::json payload = {
+                    {"ItemId", item.itemId},
+                    {"PlayMethod", jellyfin::methodDirectPlay},
+                    {"PositionTicks", item.playbackPositionTicks},
+                };
+                HTTP::post(serverUrl + std::string(jellyfin::apiPlayStop),
+                    payload.dump(), header, HTTP::Timeout{});
+            }
+            synced.push_back(item);
+        } catch (const std::exception& e) {
+            brls::Logger::warning("Sync failed for {}: {}", item.name, e.what());
+        }
+    }
+
+    if (!synced.empty()) {
+        std::lock_guard<std::mutex> lock(this->mutex);
+        for (auto& item : this->items) {
+            for (auto& p : synced) {
+                if (item.itemId == p.itemId &&
+                    item.playbackPositionTicks == p.playbackPositionTicks &&
+                    item.played == p.played) {
+                    item.needsSync = false;
+                    break;
+                }
+            }
+        }
+        this->saveIndex();
     }
 }
 

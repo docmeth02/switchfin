@@ -45,11 +45,13 @@ struct DownloadItem {
     float playedPercentage = 0;
     bool played = false;
     bool needsSync = false;
+    std::string serverId;
+    std::string userId;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DownloadItem, itemId, name, type, seriesName,
     seasonIndex, episodeIndex, productionYear, runTimeTicks, imagePrimaryTag, quality, status,
     filePath, totalBytes, downloadedBytes, errorMessage,
-    playbackPositionTicks, playedPercentage, played, needsSync);
+    playbackPositionTicks, playedPercentage, played, needsSync, serverId, userId);
 
 namespace jellyfin {
 struct Item;
@@ -69,6 +71,7 @@ public:
     void removeDownload(const std::string& itemId);
     void resumeQueue();
     void updatePlaybackState(const std::string& itemId, int64_t positionTicks, bool markPlayed = false);
+    void syncPlaybackStates();
 
     bool isDownloaded(const std::string& itemId) const;
     bool isDownloading(const std::string& itemId) const;

@@ -108,6 +108,7 @@ int main(int argc, char* argv[]) {
     } else if (!conf.checkLogin()) {
         brls::Application::pushActivity(new ServerList());
     } else {
+        brls::async([]() { DownloadManager::instance().syncPlaybackStates(); });
         brls::Application::pushActivity(new MainActivity());
     }
 
