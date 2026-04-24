@@ -142,7 +142,11 @@
     "queued": "Queued",
     "no_downloads": "No Downloads",
     "confirm_remove": "Remove this download?",
-    "play_offline": "Play Offline"
+    "play_offline": "Play Offline",
+    "download_season": "Download Season",
+    "confirm_season": "Download all episodes in this season?",
+    "season_queued": "Season queued for download",
+    "movies": "Movies"
   },
   "setting": {
     "quit_hint": "You are about to exit the application. The settings will take effect after the next startup",

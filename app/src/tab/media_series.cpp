@@ -15,6 +15,8 @@
 #include "view/presenter.hpp"
 #include "view/context_menu.hpp"
 #include "utils/keybind.hpp"
+#include "utils/download.hpp"
+#include "utils/dialog.hpp"
 #include <fmt/ranges.h>
 
 using namespace brls::literals;  // for _i18n
@@ -98,6 +100,8 @@ public:
         brls::Application::pushActivity(new brls::Activity(menu));
     }
 
+    const MediaList& getList() const { return this->list; }
+
     void clearData() override { this->list.clear(); }
 
     void appendData(const MediaList& data) { this->list.insert(this->list.end(), data.begin(), data.end()); }
@@ -125,6 +129,25 @@ public:
         };
         this->recycler->registerAction("hints/submit"_i18n, brls::BUTTON_X, contextAction, true);
         this->recycler->registerAction(KeyBind::getSetting(), contextAction);
+
+        this->recycler->registerAction("main/download/start"_i18n, brls::BUTTON_Y, [this](brls::View*) {
+            auto* focus = dynamic_cast<RecyclingGridItem*>(brls::Application::getCurrentFocus());
+            if (!focus) return false;
+            auto* ds = dynamic_cast<EpisodeDataSource*>(this->recycler->getDataSource());
+            if (!ds) return false;
+            size_t idx = focus->getIndex();
+            if (idx >= ds->getItemCount()) return false;
+            auto& ep = ds->getList().at(idx);
+            auto& dm = DownloadManager::instance();
+            if (dm.isDownloaded(ep.Id) || dm.isDownloading(ep.Id)) {
+                brls::Application::notify("main/download/downloading"_i18n);
+            } else {
+                int qi = AppConfig::instance().getValueIndex(AppConfig::DOWNLOAD_QUALITY);
+                dm.addDownload(ep, static_cast<DownloadQuality>(qi));
+                brls::Application::notify("main/download/queued"_i18n);
+            }
+            return true;
+        });
     }
 
     void onCreate() override {
@@ -264,6 +287,33 @@ void MediaSeries::doSeason() {
                 item->setFontSize(22);
                 item->setLabel(it.Name);
                 this->tabFrame->addTab(item, [it]() { return new MediaSeason(it); });
+
+                std::string sid = this->seriesId;
+                std::string seasonId = it.Id;
+                item->registerAction("main/download/download_season"_i18n, brls::BUTTON_Y, [sid, seasonId](brls::View*) {
+                    Dialog::cancelable("main/download/confirm_season"_i18n, [sid, seasonId]() {
+                        std::string query = HTTP::encode_form({
+                            {"userId", AppConfig::instance().getUserId()},
+                            {"seasonId", seasonId},
+                            {"fields", "ItemCounts,PrimaryImageAspectRatio"},
+                        });
+                        jellyfin::getJSON<jellyfin::Result<jellyfin::Episode>>(
+                            [](const jellyfin::Result<jellyfin::Episode>& r) {
+                                auto& dm = DownloadManager::instance();
+                                int qi = AppConfig::instance().getValueIndex(AppConfig::DOWNLOAD_QUALITY);
+                                auto quality = static_cast<DownloadQuality>(qi);
+                                for (auto& ep : r.Items) {
+                                    dm.addDownload(ep, quality);
+                                }
+                                brls::Application::notify("main/download/season_queued"_i18n);
+                            },
+                            [](const std::string& ex) {
+                                brls::Application::notify(ex);
+                            },
+                            jellyfin::apiShowEpisodes, sid, query);
+                    });
+                    return true;
+                });
             }
         },
         [ASYNC_TOKEN](const std::string& ex) {

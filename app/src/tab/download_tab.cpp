@@ -8,6 +8,7 @@
 #include "utils/dialog.hpp"
 #include "utils/misc.hpp"
 #include "api/jellyfin/media.hpp"
+#include <map>
 
 #ifdef USE_BOOST_FILESYSTEM
 #include <boost/filesystem.hpp>
@@ -77,11 +78,39 @@ public:
         }
     }
 
-private:
     BRLS_BIND(brls::Image, thumb, "download/thumb");
     BRLS_BIND(brls::Label, name, "download/name");
     BRLS_BIND(brls::Label, detail, "download/detail");
     BRLS_BIND(brls::Label, status, "download/status");
+};
+
+struct DownloadGroup {
+    std::string seriesName;
+    int seasonIndex = 0;
+    std::vector<DownloadItem> items;
+
+    std::string thumbPath(const std::string& dlDir) const {
+        for (auto& item : items) {
+            std::string path = dlDir + "/" + item.itemId + "/thumb.png";
+            if (fs::exists(path)) return path;
+        }
+        return "";
+    }
+
+    std::string statusSummary() const {
+        int completed = 0, downloading = 0, queued = 0, failed = 0;
+        for (auto& item : items) {
+            switch (item.status) {
+            case DownloadStatus::Completed: completed++; break;
+            case DownloadStatus::Downloading: downloading++; break;
+            case DownloadStatus::Queued: queued++; break;
+            case DownloadStatus::Failed: failed++; break;
+            }
+        }
+        if (downloading > 0 || queued > 0) return fmt::format("{}/{}", completed, items.size());
+        if (failed > 0) return fmt::format("{}/{}", completed, items.size());
+        return "main/download/completed"_i18n;
+    }
 };
 
 class DownloadDataSource : public RecyclingGridDataSource {
@@ -168,6 +197,94 @@ private:
     std::string dlDir;
 };
 
+class SeasonGroupDataSource : public RecyclingGridDataSource {
+public:
+    SeasonGroupDataSource(std::vector<DownloadGroup> groups, DownloadView* parent)
+        : groups(std::move(groups)), dlDir(AppConfig::instance().configDir() + "/downloads"), parent(parent) {}
+
+    size_t getItemCount() override { return this->groups.size(); }
+
+    RecyclingGridItem* cellForRow(RecyclingView* recycler, size_t index) override {
+        DownloadCard* cell = dynamic_cast<DownloadCard*>(recycler->dequeueReusableCell("Cell"));
+        auto& group = this->groups.at(index);
+
+        cell->thumb->setImageFromRes("img/video-card-bg.png");
+        std::string thumb = group.thumbPath(this->dlDir);
+        if (!thumb.empty()) cell->thumb->setImageFromFile(thumb);
+
+        cell->name->setText(fmt::format("Season {}", group.seasonIndex));
+        cell->detail->setText(fmt::format("{} episodes", group.items.size()));
+        cell->status->setText(group.statusSummary());
+        return cell;
+    }
+
+    void onItemSelected(brls::Box* recycler, size_t index) override {
+        auto& group = this->groups.at(index);
+        this->parent->pushEpisodeList(group.items);
+    }
+
+    void clearData() override { this->groups.clear(); }
+
+private:
+    std::vector<DownloadGroup> groups;
+    std::string dlDir;
+    DownloadView* parent;
+};
+
+class ShowGroupDataSource : public RecyclingGridDataSource {
+public:
+    ShowGroupDataSource(std::vector<DownloadGroup> groups, DownloadView* parent)
+        : groups(std::move(groups)), dlDir(AppConfig::instance().configDir() + "/downloads"), parent(parent) {}
+
+    size_t getItemCount() override { return this->groups.size(); }
+
+    RecyclingGridItem* cellForRow(RecyclingView* recycler, size_t index) override {
+        DownloadCard* cell = dynamic_cast<DownloadCard*>(recycler->dequeueReusableCell("Cell"));
+        auto& group = this->groups.at(index);
+
+        cell->thumb->setImageFromRes("img/video-card-bg.png");
+        std::string thumb = group.thumbPath(this->dlDir);
+        if (!thumb.empty()) cell->thumb->setImageFromFile(thumb);
+
+        cell->name->setText(group.seriesName);
+        cell->detail->setText(fmt::format("{} episodes", group.items.size()));
+        cell->status->setText(group.statusSummary());
+        return cell;
+    }
+
+    void onItemSelected(brls::Box* recycler, size_t index) override {
+        auto& group = this->groups.at(index);
+
+        std::map<int, std::vector<DownloadItem>> seasons;
+        for (auto& item : group.items) {
+            seasons[item.seasonIndex].push_back(item);
+        }
+
+        if (seasons.size() <= 1) {
+            this->parent->pushEpisodeList(group.items);
+            return;
+        }
+
+        std::vector<DownloadGroup> seasonGroups;
+        for (auto& [seasonIdx, eps] : seasons) {
+            DownloadGroup sg;
+            sg.seriesName = group.seriesName;
+            sg.seasonIndex = seasonIdx;
+            sg.items = std::move(eps);
+            seasonGroups.push_back(std::move(sg));
+        }
+
+        this->parent->pushSeasonList(std::move(seasonGroups));
+    }
+
+    void clearData() override { this->groups.clear(); }
+
+private:
+    std::vector<DownloadGroup> groups;
+    std::string dlDir;
+    DownloadView* parent;
+};
+
 DownloadView::DownloadView() {
     brls::Logger::debug("DownloadView: create");
 
@@ -192,17 +309,53 @@ DownloadView::~DownloadView() {
     brls::Logger::debug("DownloadView: deleted");
     DownloadManager::instance().getStatusEvent()->unsubscribe(this->statusSubId);
     DownloadManager::instance().getProgressEvent()->unsubscribe(this->progressSubId);
+    for (auto* grid : this->stack) {
+        if (grid != this->recycler) grid->freeView();
+    }
 }
 
 brls::View* DownloadView::getDefaultFocus() { return this->recycler; }
 
 void DownloadView::loadItems() {
+    if (this->stack.size() > 1) return;
+
     auto items = DownloadManager::instance().getItems();
     if (items.empty()) {
         this->recycler->setEmpty("main/download/no_downloads"_i18n);
-    } else {
-        this->recycler->setDataSource(new DownloadDataSource(std::move(items)));
+        return;
     }
+
+    std::vector<DownloadItem> standalone;
+    std::map<std::string, std::vector<DownloadItem>> byShow;
+
+    for (auto& item : items) {
+        if (item.seriesName.empty()) {
+            standalone.push_back(std::move(item));
+        } else {
+            byShow[item.seriesName].push_back(std::move(item));
+        }
+    }
+
+    if (byShow.empty()) {
+        this->recycler->setDataSource(new DownloadDataSource(std::move(standalone)));
+        return;
+    }
+
+    std::vector<DownloadGroup> groups;
+    for (auto& [name, eps] : byShow) {
+        DownloadGroup g;
+        g.seriesName = name;
+        g.items = std::move(eps);
+        groups.push_back(std::move(g));
+    }
+    if (!standalone.empty()) {
+        DownloadGroup g;
+        g.seriesName = "main/download/movies"_i18n;
+        g.items = std::move(standalone);
+        groups.push_back(std::move(g));
+    }
+
+    this->recycler->setDataSource(new ShowGroupDataSource(std::move(groups), this));
 }
 
 RecyclingGrid* DownloadView::newRecycler() {
@@ -238,6 +391,36 @@ RecyclingGrid* DownloadView::newRecycler() {
     return grid;
 }
 
+RecyclingGrid* DownloadView::newGroupRecycler() {
+    RecyclingGrid* grid = new RecyclingGrid();
+    grid->spanCount = 1;
+    grid->estimatedRowHeight = 130;
+    grid->estimatedRowSpace = 5;
+    grid->setDefaultCellFocus(1);
+    grid->registerCell("Cell", []() { return new DownloadCard(); });
+
+    grid->registerAction("hints/back"_i18n, brls::BUTTON_B, [this](...) {
+        this->dismiss();
+        return true;
+    });
+
+    return grid;
+}
+
+void DownloadView::pushEpisodeList(std::vector<DownloadItem> items) {
+    RecyclingGrid* grid = this->newRecycler();
+    grid->setDataSource(new DownloadDataSource(std::move(items)));
+    this->stack.push_back(grid);
+    this->setContent(grid);
+}
+
+void DownloadView::pushSeasonList(std::vector<DownloadGroup> groups) {
+    RecyclingGrid* grid = this->newGroupRecycler();
+    grid->setDataSource(new SeasonGroupDataSource(std::move(groups), this));
+    this->stack.push_back(grid);
+    this->setContent(grid);
+}
+
 void DownloadView::setContent(RecyclingGrid* view) {
     if (this->recycler) {
         this->removeView(this->recycler, false);
@@ -257,6 +440,7 @@ void DownloadView::dismiss(std::function<void(void)> cb) {
         this->setContent(this->stack.back());
         cb();
         lastView->freeView();
+        if (this->stack.size() == 1) this->loadItems();
     } else {
         AutoTabFrame::focus2Sidebar(this);
     }

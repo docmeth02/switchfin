@@ -13,9 +13,13 @@ public:
     brls::View* getDefaultFocus() override;
     void dismiss(std::function<void(void)> cb = [] {}) override;
 
+    void pushEpisodeList(std::vector<DownloadItem> items);
+    void pushSeasonList(std::vector<struct DownloadGroup> groups);
+
 private:
     void loadItems();
     RecyclingGrid* newRecycler();
+    RecyclingGrid* newGroupRecycler();
     void setContent(RecyclingGrid* view);
 
     std::vector<RecyclingGrid*> stack;
