@@ -7,7 +7,12 @@
 #include <borealis/core/thread.hpp>
 #include <chrono>
 #include <fstream>
+
+#ifdef BOREALIS_USE_STD_THREAD
 #include <thread>
+#else
+#include <pthread.h>
+#endif
 
 #ifdef USE_BOOST_FILESYSTEM
 #include <boost/filesystem.hpp>
@@ -16,6 +21,24 @@ namespace fs = boost::filesystem;
 #include <filesystem>
 namespace fs = std::filesystem;
 #endif
+
+namespace {
+void runDetached(std::function<void()> fn) {
+#ifdef BOREALIS_USE_STD_THREAD
+    std::thread(std::move(fn)).detach();
+#else
+    auto* task = new std::function<void()>(std::move(fn));
+    pthread_t th;
+    pthread_create(&th, nullptr, [](void* arg) -> void* {
+        auto* f = static_cast<std::function<void()>*>(arg);
+        (*f)();
+        delete f;
+        return nullptr;
+    }, task);
+    pthread_detach(th);
+#endif
+}
+}
 
 std::string DownloadManager::downloadDir() const {
     return AppConfig::instance().configDir() + "/downloads";
@@ -410,7 +433,7 @@ void DownloadManager::doDownload(DownloadItem& item) {
         this->statusEvent.fire(itemId, DownloadStatus::Downloading);
     });
 
-    std::thread([this, itemId, imagePrimaryTag, quality, url, itemDir, cancel]() {
+    runDetached([this, itemId, imagePrimaryTag, quality, url, itemDir, cancel]() {
         auto resetQueue = [this, itemId](const std::string& error) {
             brls::sync([this, itemId, error]() {
                 {
@@ -608,5 +631,5 @@ void DownloadManager::doDownload(DownloadItem& item) {
                 this->processQueue();
             }
         });
-    }).detach();
+    });
 }
