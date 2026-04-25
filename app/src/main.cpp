@@ -109,6 +109,12 @@ int main(int argc, char* argv[]) {
         brls::Application::pushActivity(new ServerList());
     } else {
         brls::async([]() { DownloadManager::instance().syncPlaybackStates(); });
+        brls::Application::getWindowFocusChangedEvent()->subscribe([](bool focused) {
+            if (focused) {
+                brls::async([]() { DownloadManager::instance().syncPlaybackStates(); });
+                brls::async([]() { DownloadManager::instance().resumeQueue(); });
+            }
+        });
         brls::Application::pushActivity(new MainActivity());
     }
 

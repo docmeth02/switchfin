@@ -67,11 +67,14 @@ struct DownloadItem {
     bool needsSync = false;
     std::string serverId;
     std::string userId;
+    std::string lastPlayedAt;
+    std::string seriesId;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DownloadItem, itemId, name, type, seriesName,
     seasonIndex, episodeIndex, productionYear, runTimeTicks, imagePrimaryTag, quality, status,
     filePath, totalBytes, downloadedBytes, errorMessage,
-    playbackPositionTicks, playedPercentage, played, needsSync, serverId, userId);
+    playbackPositionTicks, playedPercentage, played, needsSync, serverId, userId,
+    lastPlayedAt, seriesId);
 
 namespace jellyfin {
 struct Item;

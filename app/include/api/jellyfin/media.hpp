@@ -87,9 +87,10 @@ struct UserDataResult {
     int64_t PlaybackPositionTicks = 0;
     float PlayedPercentage = 0;
     bool Played = false;
+    std::string LastPlayedDate;
 };
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
-    UserDataResult, IsFavorite, PlayCount, PlaybackPositionTicks, PlayedPercentage, Played);
+    UserDataResult, IsFavorite, PlayCount, PlaybackPositionTicks, PlayedPercentage, Played, LastPlayedDate);
 
 struct MediaChapter {
     std::string Name;

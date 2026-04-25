@@ -24,6 +24,20 @@ namespace fs = std::filesystem;
 
 namespace {
 
+std::string currentISOTimestamp() {
+    auto now = std::chrono::system_clock::now();
+    auto tt = std::chrono::system_clock::to_time_t(now);
+    std::tm tm{};
+#ifdef _WIN32
+    gmtime_s(&tm, &tt);
+#else
+    gmtime_r(&tt, &tm);
+#endif
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return buf;
+}
+
 void runDetached(std::function<void()> fn) {
 #ifdef BOREALIS_USE_STD_THREAD
     std::thread(std::move(fn)).detach();
@@ -172,6 +186,7 @@ void DownloadManager::addDownload(const jellyfin::Episode& item, DownloadQuality
     dl.serverId = AppConfig::instance().getServerId();
     dl.userId = AppConfig::instance().getUserId();
     dl.seriesName = item.SeriesName;
+    dl.seriesId = item.SeriesId.is_string() ? item.SeriesId.get<std::string>() : "";
     dl.seasonIndex = item.ParentIndexNumber;
     dl.episodeIndex = item.IndexNumber;
 
@@ -200,6 +215,7 @@ void DownloadManager::updatePlaybackState(const std::string& itemId, int64_t pos
                 item.playedPercentage = item.runTimeTicks > 0
                     ? std::min(100.0f, static_cast<float>(positionTicks * 100.0 / item.runTimeTicks)) : 0;
                 if (markPlayed || item.playedPercentage >= 90.0f) item.played = true;
+                item.lastPlayedAt = currentISOTimestamp();
                 item.needsSync = true;
                 this->saveIndex();
                 break;
@@ -209,21 +225,22 @@ void DownloadManager::updatePlaybackState(const std::string& itemId, int64_t pos
 }
 
 void DownloadManager::syncPlaybackStates() {
-    std::vector<DownloadItem> pending;
+    std::vector<DownloadItem> toSync;
     {
         std::lock_guard<std::mutex> lock(this->mutex);
         for (auto& item : this->items) {
-            if (item.needsSync && !item.serverId.empty() && !item.userId.empty()) {
-                pending.push_back(item);
+            if (item.status == DownloadStatus::Completed &&
+                !item.serverId.empty() && !item.userId.empty()) {
+                toSync.push_back(item);
             }
         }
     }
-    if (pending.empty()) return;
+    if (toSync.empty()) return;
 
     auto& conf = AppConfig::instance();
-    std::vector<DownloadItem> synced;
+    bool anyChanged = false;
 
-    for (auto& item : pending) {
+    for (auto& item : toSync) {
         std::string serverUrl;
         std::string token;
 
@@ -246,34 +263,54 @@ void DownloadManager::syncPlaybackStates() {
         HTTP::Header header = {"Content-Type: application/json", conf.getAuth(token)};
 
         try {
-            if (item.played) {
-                std::string url = serverUrl +
-                    fmt::format(fmt::runtime(jellyfin::apiPlayedItems), item.userId, item.itemId);
-                HTTP::post(url, "{}", header, HTTP::Timeout{});
+            auto resp = HTTP::get(serverUrl +
+                fmt::format(fmt::runtime(jellyfin::apiUserItem), item.userId, item.itemId),
+                header, HTTP::Timeout{});
+            if (resp.empty()) continue;
+
+            auto remote = nlohmann::json::parse(resp).get<jellyfin::Detail>();
+            std::string remoteDate = remote.UserData.LastPlayedDate;
+
+            if (remoteDate > item.lastPlayedAt) {
+                item.playbackPositionTicks = remote.UserData.PlaybackPositionTicks;
+                item.played = remote.UserData.Played;
+                item.playedPercentage = remote.UserData.PlayedPercentage;
+                item.lastPlayedAt = remoteDate;
+                item.needsSync = false;
+                anyChanged = true;
+            } else if (item.needsSync) {
+                if (item.played) {
+                    HTTP::post(serverUrl +
+                        fmt::format(fmt::runtime(jellyfin::apiPlayedItems), item.userId, item.itemId),
+                        "{}", header, HTTP::Timeout{});
+                }
+                if (item.playbackPositionTicks > 0) {
+                    nlohmann::json payload = {
+                        {"ItemId", item.itemId},
+                        {"PlayMethod", jellyfin::methodDirectPlay},
+                        {"PositionTicks", item.playbackPositionTicks},
+                    };
+                    HTTP::post(serverUrl + std::string(jellyfin::apiPlayStop),
+                        payload.dump(), header, HTTP::Timeout{});
+                }
+                item.needsSync = false;
+                anyChanged = true;
             }
-            if (item.playbackPositionTicks > 0) {
-                nlohmann::json payload = {
-                    {"ItemId", item.itemId},
-                    {"PlayMethod", jellyfin::methodDirectPlay},
-                    {"PositionTicks", item.playbackPositionTicks},
-                };
-                HTTP::post(serverUrl + std::string(jellyfin::apiPlayStop),
-                    payload.dump(), header, HTTP::Timeout{});
-            }
-            synced.push_back(item);
         } catch (const std::exception& e) {
             brls::Logger::warning("Sync failed for {}: {}", item.name, e.what());
         }
     }
 
-    if (!synced.empty()) {
+    if (anyChanged) {
         std::lock_guard<std::mutex> lock(this->mutex);
-        for (auto& item : this->items) {
-            for (auto& p : synced) {
-                if (item.itemId == p.itemId &&
-                    item.playbackPositionTicks == p.playbackPositionTicks &&
-                    item.played == p.played) {
-                    item.needsSync = false;
+        for (auto& synced : toSync) {
+            for (auto& stored : this->items) {
+                if (stored.itemId == synced.itemId) {
+                    stored.playbackPositionTicks = synced.playbackPositionTicks;
+                    stored.played = synced.played;
+                    stored.playedPercentage = synced.playedPercentage;
+                    stored.lastPlayedAt = synced.lastPlayedAt;
+                    stored.needsSync = synced.needsSync;
                     break;
                 }
             }
