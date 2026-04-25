@@ -144,7 +144,7 @@ std::unordered_map<AppConfig::Item, AppConfig::Option> AppConfig::settingMap = {
     {HTTP_PROXY_STATUS, {"http_proxy_status"}},
     {HTTP_PROXY, {"http_proxy"}},
 
-    {DOWNLOAD_QUALITY, {"download_quality", {"Original", "1080p", "720p", "480p"}, {0, 1, 2, 3}}},
+    {DOWNLOAD_QUALITY, {"download_quality", {"Max", "8 Mb/s", "4 Mb/s", "2 Mb/s", "1 Mb/s", "500 Kb/s", "250 Kb/s"}, {0, 1, 2, 3, 4, 5, 6}}},
 
     {KEY_REFRESH, {"key_refresh"}},
     {KEY_LAST, {"key_last"}},

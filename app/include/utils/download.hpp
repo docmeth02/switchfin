@@ -9,7 +9,7 @@
 #include <vector>
 
 enum class DownloadStatus { Queued, Downloading, Completed, Failed };
-enum class DownloadQuality { Original, Q1080p, Q720p, Q480p };
+enum class DownloadQuality { Max, Q8M, Q4M, Q2M, Q1M, Q500K, Q250K };
 
 NLOHMANN_JSON_SERIALIZE_ENUM(DownloadStatus, {
     {DownloadStatus::Queued, "Queued"},
@@ -19,11 +19,31 @@ NLOHMANN_JSON_SERIALIZE_ENUM(DownloadStatus, {
 })
 
 NLOHMANN_JSON_SERIALIZE_ENUM(DownloadQuality, {
-    {DownloadQuality::Original, "Original"},
-    {DownloadQuality::Q1080p, "1080p"},
-    {DownloadQuality::Q720p, "720p"},
-    {DownloadQuality::Q480p, "480p"},
+    {DownloadQuality::Max, "Max"},
+    {DownloadQuality::Q8M, "8 Mb/s"},
+    {DownloadQuality::Q4M, "4 Mb/s"},
+    {DownloadQuality::Q2M, "2 Mb/s"},
+    {DownloadQuality::Q1M, "1 Mb/s"},
+    {DownloadQuality::Q500K, "500 Kb/s"},
+    {DownloadQuality::Q250K, "250 Kb/s"},
+    {DownloadQuality::Max, "Original"},
+    {DownloadQuality::Q4M, "1080p"},
+    {DownloadQuality::Q2M, "720p"},
+    {DownloadQuality::Q1M, "480p"},
 })
+
+inline int64_t downloadBitrate(DownloadQuality q) {
+    switch (q) {
+    case DownloadQuality::Max:  return 0;
+    case DownloadQuality::Q8M:  return 8000000;
+    case DownloadQuality::Q4M:  return 4000000;
+    case DownloadQuality::Q2M:  return 2000000;
+    case DownloadQuality::Q1M:  return 1000000;
+    case DownloadQuality::Q500K: return 500000;
+    case DownloadQuality::Q250K: return 250000;
+    }
+    return 0;
+}
 
 struct DownloadItem {
     std::string itemId;
@@ -35,7 +55,7 @@ struct DownloadItem {
     long productionYear = 0;
     uint64_t runTimeTicks = 0;
     std::string imagePrimaryTag;
-    DownloadQuality quality = DownloadQuality::Original;
+    DownloadQuality quality = DownloadQuality::Max;
     DownloadStatus status = DownloadStatus::Queued;
     std::string filePath;
     int64_t totalBytes = 0;
@@ -88,7 +108,6 @@ private:
     void processQueue();
     void doDownload(DownloadItem& item);
     std::string downloadDir() const;
-    std::string buildDownloadUrl(const DownloadItem& item) const;
 
     mutable std::mutex mutex;
     std::vector<DownloadItem> items;

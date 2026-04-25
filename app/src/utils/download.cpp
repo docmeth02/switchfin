@@ -23,6 +23,7 @@ namespace fs = std::filesystem;
 #endif
 
 namespace {
+
 void runDetached(std::function<void()> fn) {
 #ifdef BOREALIS_USE_STD_THREAD
     std::thread(std::move(fn)).detach();
@@ -38,7 +39,41 @@ void runDetached(std::function<void()> fn) {
     pthread_detach(th);
 #endif
 }
+
+nlohmann::json buildDownloadProfile(int64_t maxBitrate) {
+    return {
+        {"MaxStreamingBitrate", maxBitrate},
+        {"MaxStaticBitrate", maxBitrate},
+        {"DirectPlayProfiles", nlohmann::json::array({
+            {{"Container", "mp4,mkv,avi,mov,ts,webm"},
+             {"Type", "Video"},
+             {"VideoCodec", "h264,hevc,mpeg4,vp8,vp9,av1"}}
+        })},
+        {"TranscodingProfiles", nlohmann::json::array({
+            {{"Container", "ts"},
+             {"Type", "Video"},
+             {"VideoCodec", "h264"},
+             {"AudioCodec", "aac,mp3,ac3"},
+             {"Context", "Streaming"},
+             {"Protocol", "hls"},
+             {"CopyTimestamps", false},
+             {"EnableSubtitlesInManifest", true}}
+        })},
+        {"SubtitleProfiles", nlohmann::json::array({
+            {{"Format", "srt"}, {"Method", "Embed"}},
+            {{"Format", "ass"}, {"Method", "Embed"}},
+            {{"Format", "ssa"}, {"Method", "Embed"}},
+            {{"Format", "vtt"}, {"Method", "Embed"}},
+            {{"Format", "sub"}, {"Method", "Embed"}},
+            {{"Format", "subrip"}, {"Method", "Embed"}},
+            {{"Format", "pgssub"}, {"Method", "Encode"}},
+            {{"Format", "dvdsub"}, {"Method", "Encode"}},
+            {{"Format", "pgs"}, {"Method", "Encode"}}
+        })}
+    };
 }
+
+}  // namespace
 
 std::string DownloadManager::downloadDir() const {
     return AppConfig::instance().configDir() + "/downloads";
@@ -354,52 +389,6 @@ std::vector<DownloadItem> DownloadManager::getItems() const {
     return this->items;
 }
 
-std::string DownloadManager::buildDownloadUrl(const DownloadItem& item) const {
-    auto& conf = AppConfig::instance();
-    std::string server = conf.getUrl();
-    std::string token = conf.getToken();
-
-    switch (item.quality) {
-    case DownloadQuality::Original:
-        return server + fmt::format(fmt::runtime(jellyfin::apiDownload), item.itemId,
-            HTTP::encode_form({{"api_key", token}}));
-    case DownloadQuality::Q1080p:
-        return server + fmt::format(fmt::runtime(jellyfin::apiStream), item.itemId,
-            HTTP::encode_form({
-                {"static", "false"},
-                {"mediaSourceId", item.itemId},
-                {"videoCodec", "h264"},
-                {"audioCodec", "aac"},
-                {"maxStreamingBitrate", "4000000"},
-                {"maxHeight", "1080"},
-                {"api_key", token},
-            }));
-    case DownloadQuality::Q720p:
-        return server + fmt::format(fmt::runtime(jellyfin::apiStream), item.itemId,
-            HTTP::encode_form({
-                {"static", "false"},
-                {"mediaSourceId", item.itemId},
-                {"videoCodec", "h264"},
-                {"audioCodec", "aac"},
-                {"maxStreamingBitrate", "2000000"},
-                {"maxHeight", "720"},
-                {"api_key", token},
-            }));
-    case DownloadQuality::Q480p:
-        return server + fmt::format(fmt::runtime(jellyfin::apiStream), item.itemId,
-            HTTP::encode_form({
-                {"static", "false"},
-                {"mediaSourceId", item.itemId},
-                {"videoCodec", "h264"},
-                {"audioCodec", "aac"},
-                {"maxStreamingBitrate", "1000000"},
-                {"maxHeight", "480"},
-                {"api_key", token},
-            }));
-    }
-    return "";
-}
-
 // Must be called with mutex held
 void DownloadManager::processQueue() {
     if (this->downloading) return;
@@ -420,7 +409,8 @@ void DownloadManager::doDownload(DownloadItem& item) {
     std::string itemId = item.itemId;
     std::string imagePrimaryTag = item.imagePrimaryTag;
     DownloadQuality quality = item.quality;
-    std::string url = this->buildDownloadUrl(item);
+    uint64_t runTimeTicks = item.runTimeTicks;
+    int64_t bitrate = downloadBitrate(quality);
     std::string itemDir = this->downloadDir() + "/" + itemId;
 
     item.filePath = "video.mp4";
@@ -433,7 +423,7 @@ void DownloadManager::doDownload(DownloadItem& item) {
         this->statusEvent.fire(itemId, DownloadStatus::Downloading);
     });
 
-    runDetached([this, itemId, imagePrimaryTag, quality, url, itemDir, cancel]() {
+    runDetached([this, itemId, imagePrimaryTag, quality, bitrate, runTimeTicks, itemDir, cancel]() {
         auto resetQueue = [this, itemId](const std::string& error) {
             brls::sync([this, itemId, error]() {
                 {
@@ -466,16 +456,22 @@ void DownloadManager::doDownload(DownloadItem& item) {
         }
 
         auto& conf = AppConfig::instance();
-        HTTP::Header header = {conf.getAuth(conf.getToken())};
+        std::string server = conf.getUrl();
+        std::string token = conf.getToken();
+        HTTP::Header header = {conf.getAuth(token)};
 
-        std::string ext = "mp4";
         if (cancel->load()) {
             resetQueue("Cancelled");
             return;
         }
-        if (quality == DownloadQuality::Original) {
+
+        std::string url;
+        std::string ext;
+
+        if (quality == DownloadQuality::Max) {
+            ext = "mp4";
             try {
-                auto resp = HTTP::get(conf.getUrl() +
+                auto resp = HTTP::get(server +
                     fmt::format(fmt::runtime(jellyfin::apiUserItem),
                         conf.getUserId(), itemId),
                     header, HTTP::Timeout{});
@@ -493,6 +489,47 @@ void DownloadManager::doDownload(DownloadItem& item) {
             } catch (const std::exception& e) {
                 brls::Logger::warning("Failed to fetch item detail for extension: {}", e.what());
             }
+            url = server + fmt::format(fmt::runtime(jellyfin::apiDownload), itemId,
+                HTTP::encode_form({{"api_key", token}}));
+        } else {
+            ext = "ts";
+            try {
+                nlohmann::json body = {
+                    {"UserId", conf.getUserId()},
+                    {"MediaSourceId", itemId},
+                    {"AllowAudioStreamCopy", true},
+                    {"AllowVideoStreamCopy", true},
+                    {"DeviceProfile", buildDownloadProfile(bitrate)},
+                };
+
+                HTTP h;
+                HTTP::Header postHeader = {"Content-Type: application/json", conf.getAuth(token)};
+                HTTP::set_option(h, postHeader, HTTP::Timeout{});
+                auto resp = h._post(
+                    server + fmt::format(fmt::runtime(jellyfin::apiPlayback), itemId),
+                    body.dump());
+                auto result = nlohmann::json::parse(resp).get<jellyfin::PlaybackResult>();
+
+                if (!result.MediaSources.empty() && !result.MediaSources[0].TranscodingUrl.empty()) {
+                    std::string tUrl = result.MediaSources[0].TranscodingUrl;
+                    auto pos = tUrl.find("master.m3u8");
+                    if (pos != std::string::npos) tUrl.replace(pos, 11, "stream");
+                    url = server + tUrl;
+                } else {
+                    url = server + fmt::format(fmt::runtime(jellyfin::apiDownload), itemId,
+                        HTTP::encode_form({{"api_key", token}}));
+                    ext = "mp4";
+                }
+            } catch (const std::exception& e) {
+                brls::Logger::error("PlaybackInfo failed: {} - {}", itemId, e.what());
+                resetQueue(std::string("PlaybackInfo failed: ") + e.what());
+                return;
+            }
+        }
+
+        if (cancel->load()) {
+            resetQueue("Cancelled");
+            return;
         }
 
         std::string fileName = "video." + ext;
@@ -520,24 +557,31 @@ void DownloadManager::doDownload(DownloadItem& item) {
             }
         }
 
+        int64_t estimatedTotal = 0;
+        if (bitrate > 0 && runTimeTicks > 0) {
+            double durationSec = runTimeTicks / 10000000.0;
+            estimatedTotal = static_cast<int64_t>((bitrate * durationSec / 8) * 1.1);
+        }
+
         auto lastProgress = std::make_shared<std::chrono::steady_clock::time_point>();
-        HTTP::Progress::Callback progressCb = [this, itemId, lastProgress](curl_off_t total, curl_off_t now) {
+        HTTP::Progress::Callback progressCb = [this, itemId, estimatedTotal, lastProgress](curl_off_t total, curl_off_t now) {
             auto tp = std::chrono::steady_clock::now();
             if (tp - *lastProgress < std::chrono::milliseconds(500)) return;
             *lastProgress = tp;
 
-            brls::sync([this, itemId, total, now]() {
+            int64_t reportTotal = total > 0 ? total : estimatedTotal;
+            brls::sync([this, itemId, reportTotal, now]() {
                 {
                     std::lock_guard<std::mutex> lock(this->mutex);
                     for (auto& item : this->items) {
                         if (item.itemId == itemId) {
-                            item.totalBytes = total;
+                            item.totalBytes = reportTotal;
                             item.downloadedBytes = now;
                             break;
                         }
                     }
                 }
-                this->progressEvent.fire(itemId, now, total);
+                this->progressEvent.fire(itemId, now, reportTotal);
             });
         };
 

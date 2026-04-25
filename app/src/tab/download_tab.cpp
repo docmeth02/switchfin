@@ -76,12 +76,11 @@ public:
         if (total > 0) {
             int pct = static_cast<int>(downloaded * 100 / total);
             this->status->setText(fmt::format("{}%", pct));
-        } else if (downloaded > 0 && quality != DownloadQuality::Original) {
+        } else if (downloaded > 0 && quality != DownloadQuality::Max) {
             std::string size = misc::formatSize(downloaded);
-            int64_t bitrate = quality == DownloadQuality::Q1080p ? 4000000
-                : quality == DownloadQuality::Q720p ? 2000000 : 1000000;
+            int64_t bitrate = downloadBitrate(quality);
             int64_t durationSec = runTimeTicks / 10000000;
-            int64_t estimated = bitrate * durationSec / 8;
+            int64_t estimated = static_cast<int64_t>(bitrate * durationSec / 8 * 1.1);
             if (estimated > 0) {
                 int pct = std::min(99, static_cast<int>(downloaded * 100 / estimated));
                 this->status->setText(fmt::format("~{}% ({})", pct, size));
