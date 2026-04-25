@@ -111,6 +111,7 @@ private:
     void loadIndex();
     void processQueue();
     void doDownload(DownloadItem& item);
+    void doSyncPlaybackStates();
     std::string downloadDir() const;
 
     mutable std::mutex mutex;

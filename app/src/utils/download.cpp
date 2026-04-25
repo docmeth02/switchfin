@@ -239,6 +239,12 @@ void DownloadManager::updatePlaybackState(const std::string& itemId, int64_t pos
 }
 
 void DownloadManager::syncPlaybackStates() {
+    runDetached([this]() {
+        this->doSyncPlaybackStates();
+    });
+}
+
+void DownloadManager::doSyncPlaybackStates() {
     std::vector<DownloadItem> toSync;
     {
         std::lock_guard<std::mutex> lock(this->mutex);

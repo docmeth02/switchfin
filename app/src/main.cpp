@@ -108,11 +108,11 @@ int main(int argc, char* argv[]) {
     } else if (!conf.checkLogin()) {
         brls::Application::pushActivity(new ServerList());
     } else {
-        brls::async([]() { DownloadManager::instance().syncPlaybackStates(); });
+        DownloadManager::instance().syncPlaybackStates();
         brls::Application::getWindowFocusChangedEvent()->subscribe([](bool focused) {
             if (focused) {
-                brls::async([]() { DownloadManager::instance().syncPlaybackStates(); });
-                brls::async([]() { DownloadManager::instance().resumeQueue(); });
+                DownloadManager::instance().syncPlaybackStates();
+                DownloadManager::instance().resumeQueue();
             }
         });
         brls::Application::pushActivity(new MainActivity());
