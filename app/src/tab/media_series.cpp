@@ -189,6 +189,45 @@ MediaSeries::MediaSeries(const jellyfin::Item& item) : seriesId(item.Id) {
     this->special->registerCell("Cell", VideoCardCell::create);
     this->tabFrame->registerTabAction(this);
 
+    std::string seriesId = item.Id;
+    std::string seriesName = item.Name;
+    this->registerAction("main/download/start"_i18n, brls::BUTTON_Y, [seriesId, seriesName](brls::View*) {
+        auto& dm = DownloadManager::instance();
+        auto& conf = AppConfig::instance();
+        auto& smartOpt = conf.getOptions(AppConfig::DOWNLOAD_SMART_COUNT);
+        int idx = conf.getValueIndex(AppConfig::DOWNLOAD_SMART_COUNT);
+        int smartCount = (idx >= 0 && idx < (int)smartOpt.values.size()) ? smartOpt.values[idx] : 0;
+
+        if (smartCount > 0) {
+            dm.autoQueueNextEpisodes(seriesId, seriesName);
+        } else {
+            Dialog::cancelable("main/download/confirm_season"_i18n, [seriesId]() {
+                std::string query = HTTP::encode_form({
+                    {"userId", AppConfig::instance().getUserId()},
+                    {"fields", "ItemCounts,PrimaryImageAspectRatio"},
+                    {"isMissing", "false"},
+                });
+                jellyfin::getJSON<jellyfin::Result<jellyfin::Episode>>(
+                    [](const jellyfin::Result<jellyfin::Episode>& r) {
+                        auto& dm = DownloadManager::instance();
+                        int qi = AppConfig::instance().getValueIndex(AppConfig::DOWNLOAD_QUALITY);
+                        auto quality = static_cast<DownloadQuality>(qi);
+                        for (auto& ep : r.Items) {
+                            if (!ep.UserData.Played && ep.ParentIndexNumber > 0) {
+                                dm.addDownload(ep, quality);
+                            }
+                        }
+                        brls::Application::notify("main/download/season_queued"_i18n);
+                    },
+                    [](const std::string& ex) {
+                        brls::Application::notify(ex);
+                    },
+                    jellyfin::apiShowEpisodes, seriesId, query);
+            });
+        }
+        return true;
+    });
+
     this->doSeason();
     this->doSeries();
     this->doNextup();

@@ -28,13 +28,7 @@ MediaMovie::MediaMovie(const jellyfin::Item& item) : itemId(item.Id) {
         return true;
     });
 
-    auto& dm = DownloadManager::instance();
-    if (dm.isDownloaded(item.Id)) {
-        this->btnDownload->setText("main/download/completed"_i18n);
-    } else if (dm.isDownloading(item.Id)) {
-        this->btnDownload->setText("main/download/downloading"_i18n);
-    }
-    this->btnDownload->registerClickAction([this, item](...) {
+    this->registerAction("main/download/start"_i18n, brls::BUTTON_Y, [item](brls::View*) {
         auto& dm = DownloadManager::instance();
         if (dm.isDownloaded(item.Id)) {
             brls::Application::notify("main/download/completed"_i18n);
@@ -43,7 +37,6 @@ MediaMovie::MediaMovie(const jellyfin::Item& item) : itemId(item.Id) {
         } else {
             int qi = AppConfig::instance().getValueIndex(AppConfig::DOWNLOAD_QUALITY);
             dm.addDownload(item, static_cast<DownloadQuality>(qi));
-            this->btnDownload->setText("main/download/queued"_i18n);
             brls::Application::notify("main/download/queued"_i18n);
         }
         return true;
