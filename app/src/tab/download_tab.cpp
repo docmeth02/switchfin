@@ -33,7 +33,6 @@ public:
             this->thumb->setImageFromFile(thumbPath);
         }
 
-
         this->name->setText(item.seriesName.empty() ? item.name
             : fmt::format("{} - S{}E{} {}", item.seriesName, item.seasonIndex, item.episodeIndex, item.name));
 
@@ -52,24 +51,7 @@ public:
             this->status->setText("main/download/queued"_i18n);
             break;
         case DownloadStatus::Downloading:
-            if (item.totalBytes > 0) {
-                int pct = static_cast<int>(item.downloadedBytes * 100 / item.totalBytes);
-                this->status->setText(fmt::format("{}%", pct));
-            } else if (item.downloadedBytes > 0 && item.quality != DownloadQuality::Original) {
-                std::string size = misc::formatSize(item.downloadedBytes);
-                int64_t bitrate = item.quality == DownloadQuality::Q1080p ? 4000000
-                    : item.quality == DownloadQuality::Q720p ? 2000000 : 1000000;
-                int64_t durationSec = item.runTimeTicks / 10000000;
-                int64_t estimated = bitrate * durationSec / 8;
-                if (estimated > 0) {
-                    int pct = std::min(99, static_cast<int>(item.downloadedBytes * 100 / estimated));
-                    this->status->setText(fmt::format("~{}% ({})", pct, size));
-                } else {
-                    this->status->setText(size);
-                }
-            } else {
-                this->status->setText("main/download/downloading"_i18n);
-            }
+            this->setProgressText(item.downloadedBytes, item.totalBytes, item.quality, item.runTimeTicks);
             break;
         case DownloadStatus::Completed:
             if (item.played) {
@@ -87,6 +69,25 @@ public:
         case DownloadStatus::Failed:
             this->status->setText("main/download/failed"_i18n);
             break;
+        }
+    }
+
+    void setProgressText(int64_t downloaded, int64_t total, DownloadQuality quality, uint64_t runTimeTicks) {
+        if (total > 0) {
+            int pct = static_cast<int>(downloaded * 100 / total);
+            this->status->setText(fmt::format("{}%", pct));
+        } else if (downloaded > 0 && quality != DownloadQuality::Original) {
+            std::string size = misc::formatSize(downloaded);
+            int64_t bitrate = quality == DownloadQuality::Q1080p ? 4000000
+                : quality == DownloadQuality::Q720p ? 2000000 : 1000000;
+            int64_t durationSec = runTimeTicks / 10000000;
+            int64_t estimated = bitrate * durationSec / 8;
+            if (estimated > 0) {
+                int pct = std::min(99, static_cast<int>(downloaded * 100 / estimated));
+                this->status->setText(fmt::format("~{}% ({})", pct, size));
+            } else {
+                this->status->setText(size);
+            }
         }
     }
 
@@ -243,6 +244,21 @@ public:
     const std::string& getItemId(size_t index) const { return this->items.at(index).itemId; }
     size_t itemCount() const { return this->items.size(); }
 
+    int updateItemProgress(const std::string& itemId, int64_t downloaded, int64_t total) {
+        for (size_t i = 0; i < items.size(); i++) {
+            if (items[i].itemId == itemId) {
+                items[i].downloadedBytes = downloaded;
+                items[i].totalBytes = total;
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    }
+
+    const DownloadItem* getItem(size_t index) const {
+        return index < items.size() ? &items.at(index) : nullptr;
+    }
+
 private:
     std::vector<DownloadItem> items;
     std::string dlDir;
@@ -250,8 +266,9 @@ private:
 
 class SeasonGroupDataSource : public RecyclingGridDataSource {
 public:
-    SeasonGroupDataSource(std::vector<DownloadGroup> groups, DownloadView* parent)
-        : groups(std::move(groups)), dlDir(AppConfig::instance().configDir() + "/downloads"), parent(parent) {}
+    SeasonGroupDataSource(std::vector<DownloadGroup> groups, DownloadView* parent, const std::string& seriesName)
+        : groups(std::move(groups)), dlDir(AppConfig::instance().configDir() + "/downloads"),
+          parent(parent), seriesName(seriesName) {}
 
     size_t getItemCount() override { return this->groups.size(); }
 
@@ -272,7 +289,24 @@ public:
 
     void onItemSelected(brls::Box* recycler, size_t index) override {
         auto& group = this->groups.at(index);
-        this->parent->pushEpisodeList(group.items);
+        this->parent->pushEpisodeList(group.items, this->seriesName, group.seasonIndex);
+    }
+
+    int updateGroupProgress(const std::string& itemId, int64_t downloaded, int64_t total) {
+        for (size_t i = 0; i < groups.size(); i++) {
+            for (auto& item : groups[i].items) {
+                if (item.itemId == itemId) {
+                    item.downloadedBytes = downloaded;
+                    item.totalBytes = total;
+                    return static_cast<int>(i);
+                }
+            }
+        }
+        return -1;
+    }
+
+    std::string getGroupSummary(size_t index) const {
+        return index < groups.size() ? groups[index].statusSummary() : "";
     }
 
     void clearData() override { this->groups.clear(); }
@@ -281,6 +315,7 @@ private:
     std::vector<DownloadGroup> groups;
     std::string dlDir;
     DownloadView* parent;
+    std::string seriesName;
 };
 
 class ShowGroupDataSource : public RecyclingGridDataSource {
@@ -314,7 +349,7 @@ public:
         }
 
         if (seasons.size() <= 1) {
-            this->parent->pushEpisodeList(group.items);
+            this->parent->pushEpisodeList(group.items, group.seriesName);
             return;
         }
 
@@ -327,7 +362,24 @@ public:
             seasonGroups.push_back(std::move(sg));
         }
 
-        this->parent->pushSeasonList(std::move(seasonGroups));
+        this->parent->pushSeasonList(std::move(seasonGroups), group.seriesName);
+    }
+
+    int updateGroupProgress(const std::string& itemId, int64_t downloaded, int64_t total) {
+        for (size_t i = 0; i < groups.size(); i++) {
+            for (auto& item : groups[i].items) {
+                if (item.itemId == itemId) {
+                    item.downloadedBytes = downloaded;
+                    item.totalBytes = total;
+                    return static_cast<int>(i);
+                }
+            }
+        }
+        return -1;
+    }
+
+    std::string getGroupSummary(size_t index) const {
+        return index < groups.size() ? groups[index].statusSummary() : "";
     }
 
     void clearData() override { this->groups.clear(); }
@@ -342,17 +394,17 @@ DownloadView::DownloadView() {
     brls::Logger::debug("DownloadView: create");
 
     RecyclingGrid* grid = this->newRecycler();
-    this->stack.push_back(grid);
+    this->stack.push_back({grid, "", -1});
     this->setContent(grid);
 
     this->statusSubId = DownloadManager::instance().getStatusEvent()->subscribe(
         [this](const std::string&, DownloadStatus) {
-            this->loadItems();
+            this->reloadCurrentView();
         });
 
     this->progressSubId = DownloadManager::instance().getProgressEvent()->subscribe(
-        [this](const std::string&, int64_t, int64_t) {
-            this->loadItems();
+        [this](const std::string& itemId, int64_t downloaded, int64_t total) {
+            this->updateProgress(itemId, downloaded, total);
         });
 
     this->loadItems();
@@ -362,16 +414,98 @@ DownloadView::~DownloadView() {
     brls::Logger::debug("DownloadView: deleted");
     DownloadManager::instance().getStatusEvent()->unsubscribe(this->statusSubId);
     DownloadManager::instance().getProgressEvent()->unsubscribe(this->progressSubId);
-    for (auto* grid : this->stack) {
-        if (grid != this->recycler) grid->freeView();
+    for (auto& entry : this->stack) {
+        if (entry.grid != this->recycler) entry.grid->freeView();
     }
 }
 
 brls::View* DownloadView::getDefaultFocus() { return this->recycler; }
 
-void DownloadView::loadItems() {
-    if (this->stack.size() > 1) return;
+void DownloadView::updateProgress(const std::string& itemId, int64_t downloaded, int64_t total) {
+    auto* ds = this->recycler->getDataSource();
 
+    if (auto* dlDs = dynamic_cast<DownloadDataSource*>(ds)) {
+        int idx = dlDs->updateItemProgress(itemId, downloaded, total);
+        if (idx < 0) return;
+        auto* cell = dynamic_cast<DownloadCard*>(this->recycler->getGridItemByIndex(idx));
+        if (!cell) return;
+        const auto* item = dlDs->getItem(idx);
+        if (item) cell->setProgressText(downloaded, total, item->quality, item->runTimeTicks);
+    } else if (auto* showDs = dynamic_cast<ShowGroupDataSource*>(ds)) {
+        int idx = showDs->updateGroupProgress(itemId, downloaded, total);
+        if (idx < 0) return;
+        auto* cell = dynamic_cast<DownloadCard*>(this->recycler->getGridItemByIndex(idx));
+        if (cell) cell->status->setText(showDs->getGroupSummary(idx));
+    } else if (auto* seasonDs = dynamic_cast<SeasonGroupDataSource*>(ds)) {
+        int idx = seasonDs->updateGroupProgress(itemId, downloaded, total);
+        if (idx < 0) return;
+        auto* cell = dynamic_cast<DownloadCard*>(this->recycler->getGridItemByIndex(idx));
+        if (cell) cell->status->setText(seasonDs->getGroupSummary(idx));
+    }
+}
+
+void DownloadView::reloadCurrentView() {
+    if (this->reloading) return;
+    this->reloading = true;
+
+    if (this->stack.size() <= 1) {
+        this->loadItems();
+        this->reloading = false;
+        return;
+    }
+
+    auto& current = this->stack.back();
+    auto allItems = DownloadManager::instance().getItems();
+
+    if (current.seasonIndex >= 0) {
+        std::vector<DownloadItem> filtered;
+        for (auto& item : allItems) {
+            if (item.seriesName == current.seriesName && item.seasonIndex == current.seasonIndex)
+                filtered.push_back(std::move(item));
+        }
+        if (filtered.empty()) {
+            this->reloading = false;
+            this->dismiss();
+            return;
+        }
+        this->recycler->setDataSource(new DownloadDataSource(std::move(filtered)));
+    } else if (!current.seriesName.empty()) {
+        std::vector<DownloadItem> showItems;
+        for (auto& item : allItems) {
+            if (item.seriesName == current.seriesName)
+                showItems.push_back(std::move(item));
+        }
+        if (showItems.empty()) {
+            this->reloading = false;
+            this->dismiss();
+            return;
+        }
+
+        std::map<int, std::vector<DownloadItem>> seasons;
+        for (auto& item : showItems) {
+            seasons[item.seasonIndex].push_back(std::move(item));
+        }
+
+        if (seasons.size() <= 1) {
+            this->recycler->setDataSource(new DownloadDataSource(std::move(seasons.begin()->second)));
+        } else {
+            std::vector<DownloadGroup> seasonGroups;
+            for (auto& [seasonIdx, eps] : seasons) {
+                DownloadGroup sg;
+                sg.seriesName = current.seriesName;
+                sg.seasonIndex = seasonIdx;
+                sg.items = std::move(eps);
+                seasonGroups.push_back(std::move(sg));
+            }
+            this->recycler->setDataSource(
+                new SeasonGroupDataSource(std::move(seasonGroups), this, current.seriesName));
+        }
+    }
+
+    this->reloading = false;
+}
+
+void DownloadView::loadItems() {
     auto items = DownloadManager::instance().getItems();
     if (items.empty()) {
         this->recycler->setEmpty("main/download/no_downloads"_i18n);
@@ -429,7 +563,7 @@ RecyclingGrid* DownloadView::newRecycler() {
         std::string id = ds->getItemId(idx);
         Dialog::cancelable("main/download/confirm_remove"_i18n, [this, id]() {
             DownloadManager::instance().removeDownload(id);
-            this->loadItems();
+            this->reloadCurrentView();
         });
         return true;
     };
@@ -460,17 +594,17 @@ RecyclingGrid* DownloadView::newGroupRecycler() {
     return grid;
 }
 
-void DownloadView::pushEpisodeList(std::vector<DownloadItem> items) {
+void DownloadView::pushEpisodeList(std::vector<DownloadItem> items, const std::string& seriesName, int seasonIndex) {
     RecyclingGrid* grid = this->newRecycler();
     grid->setDataSource(new DownloadDataSource(std::move(items)));
-    this->stack.push_back(grid);
+    this->stack.push_back({grid, seriesName, seasonIndex});
     this->setContent(grid);
 }
 
-void DownloadView::pushSeasonList(std::vector<DownloadGroup> groups) {
+void DownloadView::pushSeasonList(std::vector<DownloadGroup> groups, const std::string& seriesName) {
     RecyclingGrid* grid = this->newGroupRecycler();
-    grid->setDataSource(new SeasonGroupDataSource(std::move(groups), this));
-    this->stack.push_back(grid);
+    grid->setDataSource(new SeasonGroupDataSource(std::move(groups), this, seriesName));
+    this->stack.push_back({grid, seriesName, -1});
     this->setContent(grid);
 }
 
@@ -490,10 +624,10 @@ void DownloadView::dismiss(std::function<void(void)> cb) {
     if (this->stack.size() > 1) {
         brls::View* lastView = this->recycler;
         this->stack.pop_back();
-        this->setContent(this->stack.back());
+        this->setContent(this->stack.back().grid);
         cb();
         lastView->freeView();
-        if (this->stack.size() == 1) this->loadItems();
+        this->reloadCurrentView();
     } else {
         AutoTabFrame::focus2Sidebar(this);
     }

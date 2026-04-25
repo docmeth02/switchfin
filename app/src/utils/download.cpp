@@ -7,6 +7,7 @@
 #include <borealis/core/thread.hpp>
 #include <chrono>
 #include <fstream>
+#include <thread>
 
 #ifdef USE_BOOST_FILESYSTEM
 #include <boost/filesystem.hpp>
@@ -409,7 +410,7 @@ void DownloadManager::doDownload(DownloadItem& item) {
         this->statusEvent.fire(itemId, DownloadStatus::Downloading);
     });
 
-    brls::async([this, itemId, imagePrimaryTag, quality, url, itemDir, cancel]() {
+    std::thread([this, itemId, imagePrimaryTag, quality, url, itemDir, cancel]() {
         auto resetQueue = [this, itemId](const std::string& error) {
             brls::sync([this, itemId, error]() {
                 {
@@ -607,5 +608,5 @@ void DownloadManager::doDownload(DownloadItem& item) {
                 this->processQueue();
             }
         });
-    });
+    }).detach();
 }
