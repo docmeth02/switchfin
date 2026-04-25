@@ -18,4 +18,14 @@ VideoCardCell::VideoCardCell() {
     };
     this->registerAction("hints/submit"_i18n, brls::BUTTON_X, actionListener, true);
     this->registerAction(KeyBind::getSetting(), actionListener);
+
+    this->registerAction("main/download/start"_i18n, brls::BUTTON_Y, [this](brls::View*) -> bool {
+        brls::Box* view = this->getParent()->getParent();
+        RecyclingView* recycler = dynamic_cast<RecyclingView*>(view);
+        if (!recycler) return false;
+        VideoDataSource* dataSrc = dynamic_cast<VideoDataSource*>(recycler->getDataSource());
+        if (!dataSrc) return false;
+        dataSrc->onDownload(this->getIndex());
+        return true;
+    });
 }

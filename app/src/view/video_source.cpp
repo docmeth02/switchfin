@@ -7,6 +7,8 @@
 #include "tab/song_list.hpp"
 #include "tab/playlist.hpp"
 #include "utils/misc.hpp"
+#include "api/jellyfin.hpp"
+#include "utils/download.hpp"
 #include "view/svg_image.hpp"
 #include "view/video_card.hpp"
 #include "view/video_source.hpp"
@@ -133,6 +135,71 @@ void VideoDataSource::onContextMenu(brls::Box* recycler, size_t index) {
     auto& item = this->list.at(index);
     brls::Box* menu = new ContextMenu(item);
     brls::Application::pushActivity(new brls::Activity(menu));
+}
+
+void VideoDataSource::onDownload(size_t index) {
+    auto& item = this->list.at(index);
+    auto& dm = DownloadManager::instance();
+
+    if (item.Type == jellyfin::mediaTypeSeries) {
+        auto& conf = AppConfig::instance();
+        auto& smartOpt = conf.getOptions(AppConfig::DOWNLOAD_SMART_COUNT);
+        int idx = conf.getValueIndex(AppConfig::DOWNLOAD_SMART_COUNT);
+        int smartCount = (idx >= 0 && idx < (int)smartOpt.values.size()) ? smartOpt.values[idx] : 0;
+
+        if (smartCount > 0) {
+            dm.autoQueueNextEpisodes(item.Id, item.Name);
+        } else {
+            brls::Application::notify("main/download/queued"_i18n);
+            std::string seriesId = item.Id;
+            jellyfin::getJSON<jellyfin::Result<jellyfin::Episode>>(
+                [](const jellyfin::Result<jellyfin::Episode>& r) {
+                    auto& dm = DownloadManager::instance();
+                    int qi = AppConfig::instance().getValueIndex(AppConfig::DOWNLOAD_QUALITY);
+                    auto quality = static_cast<DownloadQuality>(qi);
+                    for (auto& ep : r.Items) {
+                        if (!ep.UserData.Played && ep.ParentIndexNumber > 0) {
+                            dm.addDownload(ep, quality);
+                        }
+                    }
+                },
+                [](const std::string& ex) {
+                    brls::Application::notify(ex);
+                },
+                jellyfin::apiShowEpisodes, seriesId,
+                HTTP::encode_form({
+                    {"userId", AppConfig::instance().getUserId()},
+                    {"fields", "ItemCounts,PrimaryImageAspectRatio"},
+                    {"isMissing", "false"},
+                }));
+        }
+    } else if (item.Type == jellyfin::mediaTypeMovie || item.Type == jellyfin::mediaTypeVideo) {
+        if (dm.isDownloaded(item.Id)) {
+            brls::Application::notify("main/download/completed"_i18n);
+        } else if (dm.isDownloading(item.Id)) {
+            brls::Application::notify("main/download/downloading"_i18n);
+        } else {
+            int qi = AppConfig::instance().getValueIndex(AppConfig::DOWNLOAD_QUALITY);
+            dm.addDownload(item, static_cast<DownloadQuality>(qi));
+            brls::Application::notify("main/download/queued"_i18n);
+        }
+    } else if (item.Type == jellyfin::mediaTypeEpisode) {
+        if (dm.isDownloaded(item.Id)) {
+            brls::Application::notify("main/download/completed"_i18n);
+        } else if (dm.isDownloading(item.Id)) {
+            brls::Application::notify("main/download/downloading"_i18n);
+        } else {
+            int qi = AppConfig::instance().getValueIndex(AppConfig::DOWNLOAD_QUALITY);
+            jellyfin::Episode ep;
+            static_cast<jellyfin::Item&>(ep) = item;
+            ep.SeriesName = item.SeriesName;
+            ep.ParentIndexNumber = item.ParentIndexNumber;
+            ep.IndexNumber = item.IndexNumber;
+            ep.SeriesId = item.SeriesId;
+            dm.addDownload(ep, static_cast<DownloadQuality>(qi));
+            brls::Application::notify("main/download/queued"_i18n);
+        }
+    }
 }
 
 void VideoDataSource::clearData() { this->list.clear(); }
