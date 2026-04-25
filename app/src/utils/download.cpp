@@ -1,8 +1,10 @@
 #include "utils/download.hpp"
 #include "utils/config.hpp"
 #include "api/http.hpp"
+#include "api/jellyfin.hpp"
 #include "api/jellyfin/media.hpp"
 
+#include <borealis/core/application.hpp>
 #include <borealis/core/logger.hpp>
 #include <borealis/core/thread.hpp>
 #include <chrono>
@@ -207,6 +209,8 @@ void DownloadManager::resumeQueue() {
 }
 
 void DownloadManager::updatePlaybackState(const std::string& itemId, int64_t positionTicks, bool markPlayed) {
+    std::string triggerSeriesId;
+    std::string triggerSeriesName;
     {
         std::lock_guard<std::mutex> lock(this->mutex);
         for (auto& item : this->items) {
@@ -214,13 +218,23 @@ void DownloadManager::updatePlaybackState(const std::string& itemId, int64_t pos
                 item.playbackPositionTicks = positionTicks;
                 item.playedPercentage = item.runTimeTicks > 0
                     ? std::min(100.0f, static_cast<float>(positionTicks * 100.0 / item.runTimeTicks)) : 0;
+                bool wasPlayed = item.played;
                 if (markPlayed || item.playedPercentage >= 90.0f) item.played = true;
                 item.lastPlayedAt = currentISOTimestamp();
                 item.needsSync = true;
                 this->saveIndex();
+
+                if (item.played && !wasPlayed && !item.seriesId.empty()) {
+                    triggerSeriesId = item.seriesId;
+                    triggerSeriesName = item.seriesName;
+                }
                 break;
             }
         }
+    }
+
+    if (!triggerSeriesId.empty()) {
+        this->autoQueueNextEpisodes(triggerSeriesId, triggerSeriesName);
     }
 }
 
@@ -317,6 +331,97 @@ void DownloadManager::syncPlaybackStates() {
         }
         this->saveIndex();
     }
+}
+
+void DownloadManager::autoQueueNextEpisodes(const std::string& seriesId, const std::string& seriesName) {
+    auto& conf = AppConfig::instance();
+    int smartCount = conf.getValueIndex(AppConfig::DOWNLOAD_SMART_COUNT);
+    if (smartCount <= 0) return;
+
+    int existingUnwatched = 0;
+    {
+        std::lock_guard<std::mutex> lock(this->mutex);
+        for (auto& item : this->items) {
+            if (item.seriesName == seriesName && !item.played &&
+                item.status != DownloadStatus::Failed) {
+                existingUnwatched++;
+            }
+        }
+    }
+
+    int needed = smartCount - existingUnwatched;
+    if (needed <= 0) return;
+
+    int qi = conf.getValueIndex(AppConfig::DOWNLOAD_QUALITY);
+    auto quality = static_cast<DownloadQuality>(qi);
+
+    brls::async([this, seriesId, quality, needed]() {
+        auto& conf = AppConfig::instance();
+        std::string query = HTTP::encode_form({
+            {"userId", conf.getUserId()},
+            {"seriesId", seriesId},
+            {"fields", "ItemCounts,PrimaryImageAspectRatio"},
+            {"isMissing", "false"},
+        });
+
+        try {
+            auto resp = HTTP::get(conf.getUrl() +
+                fmt::format(fmt::runtime(jellyfin::apiShowEpisodes), seriesId, query),
+                HTTP::Header{conf.getAuth(conf.getToken())}, HTTP::Timeout{});
+            if (resp.empty()) return;
+
+            auto result = nlohmann::json::parse(resp)
+                .get<jellyfin::Result<jellyfin::Episode>>();
+
+            int queued = 0;
+            for (auto& ep : result.Items) {
+                if (queued >= needed) break;
+                if (ep.UserData.Played) continue;
+                if (this->isDownloaded(ep.Id) || this->isDownloading(ep.Id)) continue;
+
+                brls::sync([this, ep, quality]() {
+                    std::lock_guard<std::mutex> lock(this->mutex);
+                    for (auto& existing : this->items) {
+                        if (existing.itemId == ep.Id) return;
+                    }
+
+                    DownloadItem dl;
+                    dl.itemId = ep.Id;
+                    dl.name = ep.Name;
+                    dl.type = ep.Type;
+                    dl.productionYear = ep.ProductionYear;
+                    dl.runTimeTicks = ep.RunTimeTicks;
+                    dl.quality = quality;
+                    dl.status = DownloadStatus::Queued;
+                    dl.serverId = AppConfig::instance().getServerId();
+                    dl.userId = AppConfig::instance().getUserId();
+                    dl.seriesName = ep.SeriesName;
+                    dl.seriesId = ep.SeriesId.is_string() ? ep.SeriesId.get<std::string>() : "";
+                    dl.seasonIndex = ep.ParentIndexNumber;
+                    dl.episodeIndex = ep.IndexNumber;
+
+                    auto primaryTag = ep.ImageTags.find(jellyfin::imageTypePrimary);
+                    if (primaryTag != ep.ImageTags.end()) {
+                        dl.imagePrimaryTag = primaryTag->second;
+                    }
+
+                    this->items.push_back(dl);
+                    this->saveIndex();
+                    this->processQueue();
+                });
+                queued++;
+            }
+
+            if (queued > 0) {
+                brls::sync([queued]() {
+                    brls::Application::notify(
+                        fmt::format("Auto-queued {} episode{}", queued, queued > 1 ? "s" : ""));
+                });
+            }
+        } catch (const std::exception& e) {
+            brls::Logger::warning("Smart download failed: {}", e.what());
+        }
+    });
 }
 
 void DownloadManager::cancelDownload(const std::string& itemId) {

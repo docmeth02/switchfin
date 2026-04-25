@@ -302,10 +302,15 @@ void MediaSeries::doSeason() {
                                 auto& dm = DownloadManager::instance();
                                 int qi = AppConfig::instance().getValueIndex(AppConfig::DOWNLOAD_QUALITY);
                                 auto quality = static_cast<DownloadQuality>(qi);
+                                int count = 0;
                                 for (auto& ep : r.Items) {
-                                    dm.addDownload(ep, quality);
+                                    if (!ep.UserData.Played) {
+                                        dm.addDownload(ep, quality);
+                                        count++;
+                                    }
                                 }
-                                brls::Application::notify("main/download/season_queued"_i18n);
+                                brls::Application::notify(fmt::format(
+                                    "main/download/season_queued"_i18n, count));
                             },
                             [](const std::string& ex) {
                                 brls::Application::notify(ex);

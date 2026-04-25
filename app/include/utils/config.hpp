@@ -108,6 +108,7 @@ public:
         HTTP_PROXY,
 
         DOWNLOAD_QUALITY,
+        DOWNLOAD_SMART_COUNT,
 
         KEY_REFRESH,        // 刷新快捷键
         KEY_LAST,           // 上一个Tab快捷键

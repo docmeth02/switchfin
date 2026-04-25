@@ -442,6 +442,13 @@ void SettingTab::onCreate() {
             AppConfig::instance().setItem(AppConfig::DOWNLOAD_QUALITY, dlQualityOpt.values[selected]);
         });
 
+    auto& smartOpt = conf.getOptions(AppConfig::DOWNLOAD_SMART_COUNT);
+    selectorSmartDownload->init("main/download/smart_count"_i18n,
+        {"Off", "1", "3", "5", "10"},
+        conf.getOptionIndex(AppConfig::DOWNLOAD_SMART_COUNT), [&smartOpt](int selected) {
+            AppConfig::instance().setItem(AppConfig::DOWNLOAD_SMART_COUNT, smartOpt.values[selected]);
+        });
+
     btnSync->init("main/setting/others/sync"_i18n, AppConfig::SYNC, [](bool value) {
         AppConfig::SYNC = value;
         AppConfig::instance().setItem(AppConfig::SYNC_SETTING, value);

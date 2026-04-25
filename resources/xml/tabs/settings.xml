@@ -133,6 +133,8 @@
                 marginBottom="30px">
                 <brls:SelectorCell
                     id="setting/download/quality" />
+                <brls:SelectorCell
+                    id="setting/download/smart_count" />
             </brls:Box>
 
             <brls:Header

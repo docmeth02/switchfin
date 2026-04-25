@@ -95,6 +95,7 @@ public:
     void resumeQueue();
     void updatePlaybackState(const std::string& itemId, int64_t positionTicks, bool markPlayed = false);
     void syncPlaybackStates();
+    void autoQueueNextEpisodes(const std::string& seriesId, const std::string& seriesName);
 
     bool isDownloaded(const std::string& itemId) const;
     bool isDownloading(const std::string& itemId) const;
