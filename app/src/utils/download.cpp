@@ -335,14 +335,16 @@ void DownloadManager::syncPlaybackStates() {
 
 void DownloadManager::autoQueueNextEpisodes(const std::string& seriesId, const std::string& seriesName) {
     auto& conf = AppConfig::instance();
-    int smartCount = conf.getValueIndex(AppConfig::DOWNLOAD_SMART_COUNT);
+    auto& smartOpt = conf.getOptions(AppConfig::DOWNLOAD_SMART_COUNT);
+    int idx = conf.getValueIndex(AppConfig::DOWNLOAD_SMART_COUNT);
+    int smartCount = (idx >= 0 && idx < (int)smartOpt.values.size()) ? smartOpt.values[idx] : 0;
     if (smartCount <= 0) return;
 
     int existingUnwatched = 0;
     {
         std::lock_guard<std::mutex> lock(this->mutex);
         for (auto& item : this->items) {
-            if (item.seriesName == seriesName && !item.played &&
+            if (item.seriesId == seriesId && !item.played &&
                 item.status != DownloadStatus::Failed) {
                 existingUnwatched++;
             }
