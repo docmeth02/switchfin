@@ -2,6 +2,7 @@
 
 #include <borealis/core/singleton.hpp>
 #include <borealis/core/event.hpp>
+#include <borealis/core/timer.hpp>
 #include <nlohmann/json.hpp>
 #include <atomic>
 #include <mutex>
@@ -86,6 +87,7 @@ public:
     using ProgressEvent = brls::Event<std::string, int64_t, int64_t>;
     using StatusEvent = brls::Event<std::string, DownloadStatus>;
 
+    ~DownloadManager();
     void init();
 
     void addDownload(const jellyfin::Item& item, DownloadQuality quality);
@@ -114,6 +116,10 @@ private:
     void doSyncPlaybackStates();
     std::string downloadDir() const;
 
+    void startIdleDimmer();
+    void stopIdleDimmer();
+    void resetIdleTimer();
+
     mutable std::mutex mutex;
     std::vector<DownloadItem> items;
     std::shared_ptr<std::atomic_bool> currentCancel;
@@ -121,4 +127,10 @@ private:
 
     ProgressEvent progressEvent;
     StatusEvent statusEvent;
+
+    brls::Timer idleTimer;
+    brls::Event<>::Subscription runLoopSub;
+    bool idleDimmerActive = false;
+    bool screenDimmed = false;
+    float savedBrightness = -1;
 };

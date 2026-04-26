@@ -1,12 +1,15 @@
 #include "utils/download.hpp"
 #include "utils/config.hpp"
+#include "view/mpv_core.hpp"
 #include "api/http.hpp"
 #include "api/jellyfin.hpp"
 #include "api/jellyfin/media.hpp"
 
 #include <borealis/core/application.hpp>
+#include <borealis/core/input.hpp>
 #include <borealis/core/logger.hpp>
 #include <borealis/core/thread.hpp>
+#include <cmath>
 #include <chrono>
 #include <fstream>
 
@@ -56,6 +59,37 @@ void runDetached(std::function<void()> fn) {
 #endif
 }
 
+bool hasControllerInput(const brls::ControllerState& state) {
+    for (int i = 0; i < brls::_BUTTON_MAX; i++) {
+        if (state.buttons[i]) {
+            return true;
+        }
+    }
+
+    for (int i = 0; i < brls::_AXES_MAX; i++) {
+        if (std::abs(state.axes[i]) > 0.25f) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void restoreBacklightIfNeeded(bool& screenDimmed, float& savedBrightness) {
+    if (!screenDimmed) {
+        savedBrightness = -1;
+        return;
+    }
+
+    auto* platform = brls::Application::getPlatform();
+    if (platform->canSetBacklightBrightness() && savedBrightness >= 0.0f) {
+        platform->setBacklightBrightness(savedBrightness);
+    }
+
+    screenDimmed = false;
+    savedBrightness = -1;
+}
+
 nlohmann::json buildDownloadProfile(int64_t maxBitrate) {
     return {
         {"MaxStreamingBitrate", maxBitrate},
@@ -93,6 +127,11 @@ nlohmann::json buildDownloadProfile(int64_t maxBitrate) {
 
 std::string DownloadManager::downloadDir() const {
     return AppConfig::instance().configDir() + "/downloads";
+}
+
+DownloadManager::~DownloadManager() {
+    this->stopIdleDimmer();
+    brls::Application::getPlatform()->disableScreenDimming(false, "Downloading", "Switchfin");
 }
 
 void DownloadManager::init() {
@@ -539,17 +578,88 @@ std::vector<DownloadItem> DownloadManager::getItems() const {
     return this->items;
 }
 
-// Must be called with mutex held
+void DownloadManager::startIdleDimmer() {
+    if (this->idleDimmerActive) {
+        return;
+    }
+
+    this->idleDimmerActive = true;
+    restoreBacklightIfNeeded(this->screenDimmed, this->savedBrightness);
+
+    this->idleTimer.setEndCallback([this](bool finished) {
+        if (!finished || !this->idleDimmerActive || this->screenDimmed) return;
+
+        auto& mpv = MPVCore::instance();
+        if (!mpv.isStopped()) {
+            this->idleTimer.start(60000);
+            return;
+        }
+
+        auto* platform = brls::Application::getPlatform();
+        if (!platform->canSetBacklightBrightness()) return;
+
+        this->savedBrightness = platform->getBacklightBrightness();
+        platform->setBacklightBrightness(0.0f);
+        this->screenDimmed = true;
+    });
+
+    this->runLoopSub = brls::Application::getRunLoopEvent()->subscribe([this]() {
+        if (!this->idleDimmerActive) {
+            return;
+        }
+
+        const auto& state = brls::Application::getControllerState();
+        if (hasControllerInput(state)) {
+            this->resetIdleTimer();
+        }
+    });
+
+    this->idleTimer.start(60000);
+}
+
+void DownloadManager::stopIdleDimmer() {
+    if (!this->idleDimmerActive && !this->screenDimmed) {
+        return;
+    }
+
+    this->idleDimmerActive = false;
+
+    brls::Application::getRunLoopEvent()->unsubscribe(this->runLoopSub);
+    this->idleTimer.stop();
+
+    restoreBacklightIfNeeded(this->screenDimmed, this->savedBrightness);
+}
+
+void DownloadManager::resetIdleTimer() {
+    if (!this->idleDimmerActive) {
+        return;
+    }
+
+    restoreBacklightIfNeeded(this->screenDimmed, this->savedBrightness);
+
+    if (this->idleTimer.isRunning()) {
+        this->idleTimer.rewind();
+    } else {
+        this->idleTimer.start(60000);
+    }
+}
+
 void DownloadManager::processQueue() {
     if (this->downloading) return;
 
     for (auto& item : this->items) {
         if (item.status == DownloadStatus::Queued) {
             this->downloading = true;
+            brls::Application::getPlatform()->disableScreenDimming(true, "Downloading", "Switchfin");
+            this->startIdleDimmer();
             this->doDownload(item);
             return;
         }
     }
+
+    // Queue empty — allow sleep and restore brightness
+    brls::Application::getPlatform()->disableScreenDimming(false, "Downloading", "Switchfin");
+    this->stopIdleDimmer();
 }
 
 // Must be called with mutex held. Copies what it needs, then releases via async.
